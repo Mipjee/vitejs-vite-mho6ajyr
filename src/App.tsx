@@ -23,47 +23,86 @@ function App() {
     setLoading(true);
     setError('');
     try {
-      // Haal recente posts op
+      // Controleer eerst of de subreddit bestaat
+      const checkResponse = await fetch(`https://www.reddit.com/r/${subredditName}/about.json`);
+      if (!checkResponse.ok) {
+        throw new Error('Subreddit niet gevonden');
+      }
+
+      // Haal recente posts op met meer error handling
       const response = await fetch(`https://www.reddit.com/r/${subredditName}/new.json?limit=10`);
+      if (!response.ok) {
+        throw new Error('Kon geen posts ophalen');
+      }
+      
       const data = await response.json();
+      if (!data.data?.children) {
+        throw new Error('Ongeldige data ontvangen van Reddit');
+      }
       
       const newUsers = new Map<string, User>();
       const newComments = new Map<string, Comment[]>();
 
       // Verwerk elke post
       for (const post of data.data.children) {
-        const commentsResponse = await fetch(`https://www.reddit.com/r/${subredditName}/comments/${post.data.id}.json`);
-        const commentsData = await commentsResponse.json();
-        
-        // Verwerk comments
-        const comments = commentsData[1].data.children;
-        for (const comment of comments) {
-          const author = comment.data.author;
-          if (author !== '[deleted]' && !newUsers.has(author)) {
-            // Haal gebruikersinfo op
-            const userResponse = await fetch(`https://www.reddit.com/user/${author}/about.json`);
-            const userData = await userResponse.json();
-            
-            newUsers.set(author, {
-              username: author,
-              bio: userData.data.subreddit?.description || 'Geen bio beschikbaar',
-              post_karma: userData.data.link_karma,
-              icon_img: userData.data.icon_img
-            });
+        try {
+          const commentsResponse = await fetch(
+            `https://www.reddit.com/r/${subredditName}/comments/${post.data.id}.json`
+          );
+          if (!commentsResponse.ok) continue;
+          
+          const commentsData = await commentsResponse.json();
+          if (!commentsData[1]?.data?.children) continue;
 
-            newComments.set(author, [
-              ...(newComments.get(author) || []),
-              { author, body: comment.data.body }
-            ]);
+          // Verwerk comments
+          for (const comment of commentsData[1].data.children) {
+            const author = comment.data?.author;
+            if (
+              author && 
+              author !== '[deleted]' && 
+              author !== 'AutoModerator' && 
+              !newUsers.has(author)
+            ) {
+              try {
+                const userResponse = await fetch(`https://www.reddit.com/user/${author}/about.json`);
+                if (!userResponse.ok) continue;
+                
+                const userData = await userResponse.json();
+                
+                newUsers.set(author, {
+                  username: author,
+                  bio: userData.data?.subreddit?.description || 'Geen bio beschikbaar',
+                  post_karma: userData.data?.link_karma || 0,
+                  icon_img: userData.data?.icon_img
+                });
+
+                newComments.set(author, [
+                  ...(newComments.get(author) || []),
+                  { 
+                    author, 
+                    body: comment.data.body || 'Geen comment tekst beschikbaar'
+                  }
+                ]);
+              } catch (userError) {
+                console.warn(`Kon gebruikersdata niet ophalen voor ${author}:`, userError);
+              }
+            }
           }
+        } catch (postError) {
+          console.warn('Fout bij het verwerken van een post:', postError);
+          continue;
         }
       }
 
-      setUsers(newUsers);
-      setComments(newComments);
+      if (newUsers.size === 0) {
+        setError('Geen gebruikers gevonden in deze subreddit');
+      } else {
+        setUsers(newUsers);
+        setComments(newComments);
+      }
     } catch (err) {
-      setError('Er is een fout opgetreden bij het ophalen van de data');
-      console.error(err);
+      setError(err instanceof Error ? err.message : 'Er is een onbekende fout opgetreden');
+      console.error('Fout bij het ophalen van subreddit data:', err);
     } finally {
       setLoading(false);
     }
